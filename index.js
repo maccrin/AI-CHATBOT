@@ -72,7 +72,6 @@ const handleMeeting = async (meeting) => {
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
-              sampleRate: 44100
             },
             video: true 
           };
@@ -81,12 +80,15 @@ const handleMeeting = async (meeting) => {
           const mediaRecorder = new MediaRecorder(stream, {
             mimeType: 'audio/webm;codecs=opus'
           });
+// check if the mimeType supported by browser or not 
+const isSupported = MediaRecorder.isTypeSupported('audio/webm;codecs=opus');
+console.log(isSupported ? 'Supported' : 'Not supported');
 
-          mediaRecorder.ondataavailable = (event) => {
+          mediaRecorder.addEventListner ('dataAvailable',(event) => {
             if (event.data.size > 0) {
               recordingContext.audioChunks.push(event.data);
             }
-          };
+          });
 
           mediaRecorder.onerror = (error) => {
             console.error('MediaRecorder error:', error);
@@ -178,7 +180,7 @@ const handleMeeting = async (meeting) => {
     await supabase
       .from('meetings')
       .update({
-        status: 'error',
+        status: 'canceled',
         error_message: error.message
       })
       .eq('id', meeting.id);
