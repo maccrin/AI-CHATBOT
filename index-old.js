@@ -120,9 +120,11 @@ const handleMeeting = async (meeting) => {
       console.error('Screenshot Error:', error);
     }
   };
-  let retryCount = 0;
+
   let browser = null;
   let page = null;
+  let retryCount = 0;
+  
   try {
     console.log(` Starting meeting automation for meeting ID: ${meeting.id}`);
     console.log('Meeting Details:', JSON.stringify(meeting, null, 2));
@@ -148,7 +150,7 @@ try {
   throw error;
 }
     console.log('launching browser');
-     browser = await puppeteer.launch({
+    const browser = await puppeteer.launch({
       headless: false,
       channel: 'chrome', // Use installed Chrome
       executablePath: CHROME_PATH,
@@ -201,7 +203,7 @@ console.log('Browser and page setup complete');
     // Email input with enhanced waiting
     console.log('Handling email input...');
     const emailSelector = 'input[type="email"]';
-    await page.waitForSelector(emailSelector, { visible: true, timeout: 15000 });
+    await page.waitForSelector(emailSelector, { visible: true, timeout: 5000 });
     
     // Clear email field first
     await page.$eval(emailSelector, e => e.value = '');
