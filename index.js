@@ -1,5 +1,4 @@
 import dotenv from 'dotenv';
-import os from 'os';
 import { tmpdir } from 'os';
 import { createClient } from '@supabase/supabase-js';
 import schedule from 'node-schedule';
@@ -72,7 +71,6 @@ const handleMeeting = async (meeting) => {
     // Google Login Selectors
     SECURITY_WARNING: 'div:has-text("This browser or app may not be secure")',
     TRY_AGAIN_BUTTON: 'button:has-text("Try again"), button[jsname="LgbsSe"]',
-    PASSWORD_INPUT: 'input[type="password"], input[name="password"]',
     CHALLENGE_FRAME: 'iframe[title="Challenge"]',
     EMAIL_INPUT: 'input[type="email"]',
     PASSWORD_INPUT: 'input[type="password"]',
@@ -136,7 +134,8 @@ const handleMeeting = async (meeting) => {
     await fs.mkdir(RECORDING_DIR, { recursive: true });
     process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true';
 // Create a separate user data directory for the automation
-const USER_DATA_DIR = 'C:\\chrome_automation_profile';
+const USER_DATA_DIR = path.join(tmpdir(), `chrome_profile_${Date.now()}`);
+;
 
 // Ensure user data directory exists
 try {
@@ -154,7 +153,7 @@ try {
       executablePath: CHROME_PATH,
       ignoreDefaultArgs: ['--disable-extensions'],
       args: [
-        '--disable-web-security',
+       '--disable-web-security',
         '--disable-blink-features=AutomationControlled',
         `--user-data-dir=${USER_DATA_DIR}`,
         '--no-sandbox',
@@ -166,12 +165,11 @@ try {
    // Wait for browser to be properly initialized
    await new Promise(resolve => setTimeout(resolve, 3000));
    // Close initial blank page and create new page
-// Close initial blank page and create new page
-const pages = await browser.pages();
-if (pages.length > 0) {
-    await Promise.all(pages.map(page => page.close()));
-}
-page = await browser.newPage();
+   const pages = await browser.pages();
+   page = pages[0];  // Just use the first auto-created page
+   const client = await page.target().createCDPSession();
+   await client.send('Network.clearBrowserCookies');
+   await client.send('Network.clearBrowserCache');
 await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
  
 page.setDefaultNavigationTimeout(60000);
@@ -194,62 +192,71 @@ console.log('Browser and page setup complete');
     try {
       console.log('Starting Google authentication...');
       const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0' });
-    await page.goto('https://accounts.google.com/');
+    await page.goto('https://accounts.google.com/',{ waitUntil: 'networkidle0' });
     //await navigationPromise;
     await page.waitForNavigation({ waitUntil: 'networkidle0' });
     
-    // Email input with enhanced waiting
+   // Email input with enhanced waiting
+    // Wait for and fill email
     console.log('Handling email input...');
-    const emailSelector = 'input[type="email"]';
-    await page.waitForSelector(emailSelector, { visible: true, timeout: 15000 });
+    await page.waitForSelector('input[type="email"]', { 
+      visible: true, 
+      timeout: 20000 
+    });
     
-    // Clear email field first
-    await page.$eval(emailSelector, e => e.value = '');
-    await page.type(emailSelector, process.env.GOOGLE_EMAIL, { delay: 100 });
+    // Clear the field first and wait a bit
+    await page.click('input[type="email"]');
+    await page.keyboard.down('Control');
+    await page.keyboard.press('A');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    await new Promise(r => setTimeout(r, 1000));
     
-    // Click next after email
-    const identifierNextSelector = '#identifierNext';
-    await page.waitForSelector(identifierNextSelector, { visible: true, timeout: 5000 });
+    // Type email
+    await page.type('input[type="email"]', 'maddasgu@gmail.com', { delay: 100 });
+    console.log('Email entered');
     
-    // Click using evaluate for better reliability
-    await page.$eval(identifierNextSelector, button => button.click());
+    // Wait and click Next
+    const nextButton = await page.waitForSelector('button[type="button"]:not([disabled])', {
+      visible: true,
+      timeout: 15000
+    });
+    await nextButton.click();
+    console.log('Clicked next after email');
     
-    // Wait for password field to be ready
-    console.log('Waiting for password field...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    // Wait for password field with longer timeout
+    await page.waitForSelector('input[type="password"]', {
+      visible: true,
+      timeout: 20000
+    });
     
-    // Password input with enhanced waiting
-    console.log('Handling password input...');
-    const passwordSelector = 'input[type="password"]';
-    await page.waitForSelector(passwordSelector, { visible: true, timeout: 10000 });
+    // Clear any existing input and type password
+    await page.click('input[type="password"]');
+    await page.keyboard.down('Control');
+    await page.keyboard.press('A');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+    await new Promise(r => setTimeout(r, 1000));
     
-    // Clear password field first
-    await page.$eval(passwordSelector, e => e.value = '');
-    await page.type(passwordSelector, process.env.GOOGLE_PASSWORD, { delay: 100 });
+    // Type password
+    await page.type('input[type="password"]', process.env.GOOGLE_PASSWORD, { delay: 100 });
+    console.log('Password entered');
     
     // Click next after password
-    console.log('Clicking password next button...');
-    const passwordNextSelector = '#passwordNext';
-    await page.waitForSelector(passwordNextSelector, { visible: true, timeout: 5000 });
+    const passwordNext = await page.waitForSelector('button[type="button"]:not([disabled])', {
+      visible: true,
+      timeout: 15000
+    });
+    await passwordNext.click();
+    console.log('Clicked next after password');
     
-    // Click using evaluate for better reliability
-    await page.$eval(passwordNextSelector, button => button.click());
+    // Wait for navigation to complete
+    await page.waitForNavigation({ 
+      waitUntil: 'networkidle0',
+      timeout: 30000 
+    });
     
-    // Wait for navigation and verify login success
-    console.log('Waiting for login completion...');
-    await Promise.race([
-      page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 }),
-      new Promise(resolve => setTimeout(resolve, 10000))
-    ]);
-    
-    // Save session cookies
-    console.log('Saving session cookies...');
-    const cookies = await page.cookies();
-    await fs.writeFile(SESSION_FILE, JSON.stringify(cookies, null, 2));
-    
-    console.log('Login sequence completed successfully');
-  
-    
+    console.log('Login sequence completed');
   } catch (error) {
     console.error('Login failed:', error);
     
@@ -374,7 +381,20 @@ console.log('Browser and page setup complete');
   } catch (error) {
     console.error('Meeting automation failed:', error.message);
    // await takeScreenshot(page, 'error-state');
-
+   if (page) {
+    try {
+        await page.close();
+    } catch (e) {
+        console.error('Error closing page:', e);
+    }
+}
+if (browser) {
+    try {
+        await browser.close();
+    } catch (e) {
+        console.error('Error closing browser:', e);
+    }
+   
     // Update meeting status with error
     await supabase
       .from('meeting')
@@ -384,11 +404,16 @@ console.log('Browser and page setup complete');
       })
       .eq('id', meeting.id);
 
-  } finally {
-    if (browser) {
-      await browser.close().catch(console.error);
+  }
+ } finally {
+  if (browser) {
+    try {
+        await browser.close();
+    } catch (e) {
+        console.error('Error in final browser cleanup:', e);
     }
   }
+}
 };
 
 // Schedule individual meeting
