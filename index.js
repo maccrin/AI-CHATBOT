@@ -11,7 +11,13 @@ import path from 'path';
 
 // Load environment variables
 dotenv.config();
-//puppeteer.use(StealthPlugin());
+
+// initialoze stealthplugin
+const stealthPlugin = StealthPlugin();
+stealthPlugin.enabledEvasions.delete('iframe.contentWindow');
+stealthPlugin.enabledEvasions.delete('media.codecs');
+//add plugin to puppeteer
+puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
 puppeteer.use(AdblockerPlugin({ blockTrackers: true }));
 
@@ -149,16 +155,17 @@ try {
     console.log('launching browser');
      browser = await puppeteer.launch({
       headless: false,
-      channel: 'chrome', // Use installed Chrome
-      executablePath: CHROME_PATH,
-      ignoreDefaultArgs: ['--disable-extensions'],
+      ignoreDefaultArgs: ["--enable-automation","--disable-blink-features=AutomationControlled"],
       args: [
-       '--disable-web-security',
-        '--disable-blink-features=AutomationControlled',
         `--user-data-dir=${USER_DATA_DIR}`,
-        '--no-sandbox',
-        '--disable-setuid-sandbox'
-      ],
+        '--disable-gpu',
+        '--disable-dev-shm-usage',
+        '--disable-software-rasterizer',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--start-maximized'
+    ],
+      executablePath: CHROME_PATH,
       defaultViewport: null
   });
     
@@ -188,7 +195,14 @@ console.log('Browser and page setup complete');
         console.log(`Received ${response.status()} response from ${response.url()}`);
       }
     });
-
+// Override navigator.webdriver
+await page.evaluateOnNewDocument(() => {
+  delete Object.getPrototypeOf(navigator).webdriver;
+  // Overwrite the automation property
+  Object.defineProperty(navigator, 'webdriver', {
+    get: () => undefined
+  });
+});
     try {
       console.log('Starting Google authentication...');
       const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0' });
@@ -201,28 +215,32 @@ console.log('Browser and page setup complete');
     console.log('Handling email input...');
     await page.waitForSelector('input[type="email"]', { 
       visible: true, 
-      timeout: 20000 
+      timeout: 30000 
     });
-    
-    // Clear the field first and wait a bit
-    await page.click('input[type="email"]');
-    await page.keyboard.down('Control');
-    await page.keyboard.press('A');
-    await page.keyboard.up('Control');
-    await page.keyboard.press('Backspace');
-    await new Promise(r => setTimeout(r, 1000));
-    
-    // Type email
-    await page.type('input[type="email"]', 'maddasgu@gmail.com', { delay: 100 });
-    console.log('Email entered');
-    
-    // Wait and click Next
-    const nextButton = await page.waitForSelector('button[type="button"]:not([disabled])', {
-      visible: true,
-      timeout: 15000
-    });
-    await nextButton.click();
-    console.log('Clicked next after email');
+     // Add a small delay before interaction
+  await new Promise(r => setTimeout(r, 2000));
+      // Clear the field and type email with explicit clicks
+  await page.click('input[type="email"]', { clickCount: 3 });
+  await new Promise(r => setTimeout(r, 500));
+  await page.keyboard.press('Backspace');
+  await new Promise(r => setTimeout(r, 500));
+  
+  // Type email character by character with delay
+  const email = process.env.GOOGLE_EMAIL;
+  for (const char of email) {
+    await page.keyboard.type(char);
+    await new Promise(r => setTimeout(r, 100));
+  }
+  console.log('Email entered');
+  
+  // Wait for and click Next with explicit delay
+  await new Promise(r => setTimeout(r, 1000));
+  const nextButton = await page.waitForSelector('#identifierNext button', {
+    visible: true,
+    timeout: 20000
+  });
+  await nextButton.click();
+  console.log('Clicked next after email');
     
     // Wait for password field with longer timeout
     await page.waitForSelector('input[type="password"]', {
