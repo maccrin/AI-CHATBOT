@@ -206,76 +206,65 @@ await page.evaluateOnNewDocument(() => {
     try {
       console.log('Starting Google authentication...');
       const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0' });
-    await page.goto('https://accounts.google.com/',{ waitUntil: 'networkidle0' });
-    //await navigationPromise;
-    await page.waitForNavigation({ waitUntil: 'networkidle0' });
-    
+    await page.goto('https://accounts.google.com/',{ waitUntil: 'networkidle0' }); 
    // Email input with enhanced waiting
-    // Wait for and fill email
-    console.log('Handling email input...');
-    await page.waitForSelector('input[type="email"]', { 
-      visible: true, 
-      timeout: 30000 
-    });
-     // Add a small delay before interaction
-  await new Promise(r => setTimeout(r, 2000));
-      // Clear the field and type email with explicit clicks
-  await page.click('input[type="email"]', { clickCount: 3 });
-  await new Promise(r => setTimeout(r, 500));
-  await page.keyboard.press('Backspace');
-  await new Promise(r => setTimeout(r, 500));
-  
-  // Type email character by character with delay
-  const email = process.env.GOOGLE_EMAIL;
-  for (const char of email) {
-    await page.keyboard.type(char);
-    await new Promise(r => setTimeout(r, 100));
-  }
-  console.log('Email entered');
-  
-  // Wait for and click Next with explicit delay
-  await new Promise(r => setTimeout(r, 1000));
-  const nextButton = await page.waitForSelector('#identifierNext button', {
+  // Replace all page.waitForTimeout() with this:
+await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
+  try {
+    console.log('inside email field');
+     // First find and interact with the email input field
+  console.log('Looking for email input field...');
+  const emailField = await page.waitForSelector('input[type="email"]', {
     visible: true,
-    timeout: 20000
+    timeout: 10000
   });
-  await nextButton.click();
-  console.log('Clicked next after email');
+
+  if (!emailField) {
+    throw new Error('Email field not found');
+  }
+
+  // Focus and click the email field first
+  await emailField.click();
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  // Now the passkey option should be visible if it exists
+  // Ignore it and proceed with email input
+  await emailField.click({ clickCount: 3 }); // Clear any existing text
+  await page.keyboard.press('Backspace');
+
+  // Type email with delay
+  console.log('Typing email...');
+  await emailField.type(process.env.GOOGLE_EMAIL, { delay: 100 });
+
+  // Verify email was typed correctly
+  const emailValue = await page.$eval('input[type="email"]', el => el.value);
+  console.log('Email field value after typing:', emailValue);
     
-    // Wait for password field with longer timeout
-    await page.waitForSelector('input[type="password"]', {
-      visible: true,
-      timeout: 20000
-    });
-    
-    // Clear any existing input and type password
-    await page.click('input[type="password"]');
-    await page.keyboard.down('Control');
-    await page.keyboard.press('A');
-    await page.keyboard.up('Control');
-    await page.keyboard.press('Backspace');
-    await new Promise(r => setTimeout(r, 1000));
-    
-    // Type password
-    await page.type('input[type="password"]', process.env.GOOGLE_PASSWORD, { delay: 100 });
-    console.log('Password entered');
-    
-    // Click next after password
-    const passwordNext = await page.waitForSelector('button[type="button"]:not([disabled])', {
-      visible: true,
-      timeout: 15000
-    });
-    await passwordNext.click();
-    console.log('Clicked next after password');
-    
-    // Wait for navigation to complete
-    await page.waitForNavigation({ 
-      waitUntil: 'networkidle0',
-      timeout: 30000 
-    });
-    
-    console.log('Login sequence completed');
   } catch (error) {
+      console.log('First method failed, trying alternative...');
+      
+      const emailField = await page.$('input[type="email"]');
+      await emailField.focus();
+      await emailField.type(process.env.GOOGLE_EMAIL, { delay: 50 });
+  }
+
+    await page.click('#identifierNext'); // Click "Next"
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    //handling password input
+    console.log('Typing password...');
+    await page.waitForSelector('input[type="password"]', { visible: true, timeout: 30000 });
+    const passwordField = await page.$('input[type="password"]');
+    await passwordField.focus(); // Ensures focus on the input field
+    await passwordField.click({ clickCount: 3 });
+    await passwordField.type(process.env.GOOGLE_PASSWORD, { delay: 100 });
+    await page.click('#passwordNext'); // Click "Next"
+
+      // Wait for navigation to confirm login success
+  await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 });
+    console.log('Login sequence completed');
+  } 
+  
+  catch (error) {
     console.error('Login failed:', error);
     
     // Take error screenshot
@@ -289,11 +278,9 @@ await page.evaluateOnNewDocument(() => {
     
     throw error;
   }
-    
 
     // Perform login
     //await attemptLogin();
-
     // Join meeting
     console.log(`Joining meeting: ${meeting.id}`);
     await page.goto(meeting.meeting_url, {
