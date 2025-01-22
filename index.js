@@ -163,7 +163,9 @@ try {
         '--disable-software-rasterizer',
         '--no-first-run',
         '--no-default-browser-check',
-        '--start-maximized'
+        '--start-maximized', 
+        '--use-fake-ui-for-media-stream', // Automatically grant camera/microphone permissions
+        '--use-fake-device-for-media-stream', // Use a fake device for media stream
     ],
       executablePath: CHROME_PATH,
       defaultViewport: null
@@ -283,10 +285,19 @@ await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
     //await attemptLogin();
     // Join meeting
     console.log(`Joining meeting: ${meeting.id}`);
-    await page.goto(meeting.meeting_url, {
-      waitUntil: 'networkidle0',
-      timeout: PAGE_LOAD_TIMEOUT
-    });
+
+// Check if we're on the Google account page and force redirect to the meeting URL
+if (page.url() === 'https://myaccount.google.com/?pli=1') {
+
+  console.log('Detected redirection to Google account page, navigating to meeting URL...');
+  await page.goto(meeting.meeting_url, { waitUntil: 'networkidle0', timeout: PAGE_LOAD_TIMEOUT });
+} else {
+  console.log('Logged in successfully, navigating to meeting URL...');
+  await page.goto(meeting.meeting_url, { waitUntil: 'networkidle0', timeout: PAGE_LOAD_TIMEOUT });
+}
+
+
+   
      // Check for permission errors
      const permissionError = await page.$('text/You can\'t create a meeting yourself');
      if (permissionError) {
@@ -295,44 +306,57 @@ await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
 
     // Wait for pre-join screen and set name
     console.log('Setting up for meeting join...');
-    await waitForSelectorWithRetry(page, 'div[jscontroller]', { timeout: 30000 });
-
-    const nameInput = await page.$(SELECTORS.NAME_INPUT);
-    if (nameInput) {
-      await nameInput.click({ clickCount: 3 });
-      await nameInput.type('Recording Bot');
-    }
+  await new Promise( resolve=> setTimeout(resolve,6000));
 
     // Handle camera and mic
-    console.log('Configuring camera and mic...');
-    try {
-      await waitForSelectorWithRetry(page, SELECTORS.CAMERA_BUTTON, { timeout: 5000 });
-      await page.click(SELECTORS.CAMERA_BUTTON);
-      await waitForSelectorWithRetry(page, SELECTORS.MIC_BUTTON, { timeout: 5000 });
-      await page.click(SELECTORS.MIC_BUTTON);
-    } catch (e) {
-      console.log('Camera/mic buttons not found, continuing...');
-    }
 
     // Function to check for multiple possible join button selectors
     const findJoinButton = async () => {
-      const selectors = [
-        '[jsname="Cuz2Ue"]',  // Standard join button
-        'button[jsname="A5il2e"]',  // Alternate join button
-        'button[jsname="QgSmzd"]',  // "Ask to join" button
-        'button:has-text("Join now")',  // Text-based selector
-        'button:has-text("Ask to join")'  // Text-based selector
-      ];
-
-      for (const selector of selectors) {
-        const button = await page.$(selector);
-        if (button) {
-          console.log(`Found join button with selector: ${selector}`);
-          return button;
-        }
+      console.log('Inside "Ask to join" button function');
+      
+  try {
+    // Wait for page stability
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Find button containing the span with "Ask to join" text
+    const button = await page.evaluateHandle(() => {
+      // First find the span with "Ask to join" text
+      const span = Array.from(document.querySelectorAll('span')).find(
+        span => span.textContent === 'Ask to join'
+      );
+      // If span found, get its parent button
+      if (span) {
+        return span.closest('button');
       }
       return null;
-    };
+    });
+
+    if (!button) {
+      throw new Error('Join button not found');
+    }
+
+    console.log('Found join button, attempting to click...');
+    
+    // Get button position
+    const buttonBox = await button.boundingBox();
+    if (!buttonBox) {
+      throw new Error('Could not get button position');
+    }
+
+    // Click in the center of the button
+    await page.mouse.click(
+      buttonBox.x + buttonBox.width/2,
+      buttonBox.y + buttonBox.height/2
+    );
+    
+    console.log('Join button clicked successfully');
+  } 
+    catch(error){
+
+      console.error('Error interacting with "Ask to join" button:', error);
+    } 
+    
+  };
 
     // Handle pre-join settings
     console.log('Setting up pre-join configurations...');
@@ -340,29 +364,20 @@ await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
     // Wait for the page to stabilize
     await new Promise(r => setTimeout(r, 5000));
 
-    // Handle camera and microphone permissions
-    const mediaButtons = await page.$$('[role="button"]');
-    for (const button of mediaButtons) {
-      const ariaLabel = await button.evaluate(el => el.getAttribute('aria-label'));
-      if (ariaLabel?.includes('camera') || ariaLabel?.includes('microphone')) {
-        await button.click().catch(() => {});
-        await new Promise(r => setTimeout(r, 1000));
-      }
-    }
-
     // Look for join button
     console.log('Looking for join button...');
-    const joinButton = await findJoinButton();
-    if (!joinButton) {
-      throw new Error('Join button not found after checking all possible selectors');
+     await findJoinButton();
+  
+    await page.screenshot({ path: 'after_click.png' });
+    console.log('Screenshot taken after clicking join button.');
+
+    try {
+      await page.waitForSelector('div[class="ne2Ple-oshW8e-V67aGc"]', { visible: true, timeout: 60000 });
+      console.log('Detected "Present now" tooltip. You are in the meeting.');
+    } catch (error) {
+      console.log('Join confirmation failed or not detected:', error);
     }
-
-    // Click join button
-    console.log('Clicking join button...');
-    await joinButton.click();
-
-    // Wait for join confirmation
-    console.log('Waiting for join confirmation...');
+   
     await new Promise(r => setTimeout(r, 5000));
 
     // Calculate and wait for meeting duration
