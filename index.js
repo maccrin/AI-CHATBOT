@@ -8,10 +8,14 @@ import AnonymizeUAPlugin from 'puppeteer-extra-plugin-anonymize-ua';
 import AdblockerPlugin from 'puppeteer-extra-plugin-adblocker';
 import fs from 'fs/promises';
 import path from 'path';
-
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 // Load environment variables
 dotenv.config();
 
+// @ts-nocheck
 // initialoze stealthplugin
 const stealthPlugin = StealthPlugin();
 stealthPlugin.enabledEvasions.delete('iframe.contentWindow');
@@ -29,11 +33,138 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
+
 // Initialize Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
+
+const execAsync = promisify(exec);
+// Set ffmpeg path
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+
+// Helper function to check if audio recording is working
+const testAudioRecording = async () => {
+  let command;
+  try {
+    const testPath = path.join(RECORDING_DIR, 'test-audio.mp3');
+    command = await startAudioRecording(testPath);
+    
+    // Record for 5 seconds as a test
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Properly kill the FFmpeg process
+
+    if (command && command.ffmpegProc) {
+      console.log('Stopping test audio recording...');
+      command.ffmpegProc.kill('SIGTERM');
+
+      // Wait for process to fully stop
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    
+    // Check if file exists and has size
+    const stats = await fs.stat(testPath);
+    return stats.size > 0;
+  } catch (error) {
+    console.error('Audio test failed:', error);
+    return false;
+  }
+};
+// Function to parse audio devices from FFmpeg output
+const parseAudioDevices = (stderr) => {
+  const devices = [];
+  const lines = stderr.split('\n');
+  let currentDevice = null;
+
+  for (const line of lines) {
+    // Look for audio device entries
+    const deviceMatch = line.match(/"([^"]+)"\s*\(audio\)/);
+    if (deviceMatch) {
+      currentDevice = {
+        name: deviceMatch[1],
+        alternative: null
+      };
+      devices.push(currentDevice);
+    }
+    // Look for alternative names
+    const altMatch = line.match(/Alternative name\s*"([^"]+)"/);
+    if (altMatch && currentDevice) {
+      currentDevice.alternative = altMatch[1];
+    }
+  }
+  return devices;
+};
+
+// Function to list available audio devices
+const listAudioDevices = async () => {
+  try {
+    const { stderr } = await execAsync('ffmpeg -list_devices true -f dshow -i dummy');
+    const devices = parseAudioDevices(stderr);
+    console.log('Available audio devices:', devices);
+    return devices;
+  } catch (error) {
+    // FFmpeg returns error code 1 when listing devices, but still outputs the list
+    if (error.stderr) {
+      const devices = parseAudioDevices(error.stderr);
+      console.log('Available audio devices:', devices);
+      return devices;
+    }
+    throw error;
+  }
+};
+
+
+// Audio recording function
+const startAudioRecording = (outputPath) => {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Get available devices
+      const devices = await listAudioDevices();
+      if (!devices.length) {
+        return reject(new Error('No audio devices found'));
+      }
+
+      // Select first available device
+      const device = devices[0];
+      const deviceName = device.alternative || device.name;
+
+      // Properly escape device name for FFmpeg
+      const escapedDeviceName = deviceName.replace(/"/g, '\\"');
+
+      const command = ffmpeg()
+        .input(`audio=${escapedDeviceName}`)
+        .inputFormat('dshow')
+        .inputOptions([
+          '-thread_queue_size 4096',
+          '-channels 2',
+          '-sample_rate 44100'
+        ])
+        .outputOptions([
+          '-acodec libmp3lame',
+          '-ar 44100',
+          '-ab 128k',
+          '-ac 2'
+        ])
+        .on('start', (commandLine) => {
+          console.log('FFmpeg process started:', commandLine);
+          resolve(command); // 🔥 Ensure `command` is returned
+        })
+        .on('error', (err) => {
+          console.error('Audio recording error:', err);
+          reject(err);
+        });
+
+      // Add output file
+      command.save(outputPath);
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
+
 
 // Constants
 const stealth = StealthPlugin();
@@ -44,10 +175,11 @@ const RECORDING_DIR = path.join(process.cwd(), 'recordings');
 const SESSION_FILE = path.join(process.cwd(), 'google-session.json');
 const MEETING_CHECK_INTERVAL = '*/1 * * * *';
 const PAGE_LOAD_TIMEOUT = 60000;
-const MAX_RETRIES = 6;
-const RETRY_DELAY = 5000;
 // Use 64-bit Chrome path
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+
+
+
 
 // Helper function for waiting with retry
 const waitForSelectorWithRetry = async (page, selector, options = {}) => {
@@ -124,11 +256,12 @@ const handleMeeting = async (meeting) => {
       console.error('Screenshot Error:', error);
     }
   };
-  let retryCount = 0;
   let browser = null;
   let page = null;
+  
   try {
     console.log(` Starting meeting automation for meeting ID: ${meeting.id}`);
+    await listAudioDevices();
     console.log('Meeting Details:', JSON.stringify(meeting, null, 2));
 
     // Validate meeting object
@@ -153,8 +286,8 @@ try {
   throw error;
 }
     console.log('launching browser');
-     browser = await puppeteer.launch({
-      headless: false,
+    browser = await puppeteer.launch({
+      headless: true,
       ignoreDefaultArgs: ["--enable-automation","--disable-blink-features=AutomationControlled"],
       args: [
         `--user-data-dir=${USER_DATA_DIR}`,
@@ -166,6 +299,13 @@ try {
         '--start-maximized', 
         '--use-fake-ui-for-media-stream', // Automatically grant camera/microphone permissions
         '--use-fake-device-for-media-stream', // Use a fake device for media stream
+        //additional features 
+        '--allow-file-access',
+        '--enable-usermedia-screen-capturing',
+        '--auto-select-desktop-capture-source="Meet"',
+        '--disable-features=IsolateOrigins',
+        '--disable-site-isolation-trials',
+        '--autoplay-policy=no-user-gesture-required'
     ],
       executablePath: CHROME_PATH,
       defaultViewport: null
@@ -176,16 +316,22 @@ try {
    // Close initial blank page and create new page
    const pages = await browser.pages();
    page = pages[0];  // Just use the first auto-created page
-   const client = await page.target().createCDPSession();
+
+
+   // Create CDP session
+  
+
+   const filename = path.join(RECORDING_DIR, `meeting-${meeting.id}-${Date.now()}.webm`);
+  
+    const client = await page.createCDPSession();
    await client.send('Network.clearBrowserCookies');
    await client.send('Network.clearBrowserCache');
 await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
  
 page.setDefaultNavigationTimeout(60000);
-console.log('Browser and page setup complete');
-    // Anti-detection setup
-   
 
+console.log('Browser and page setup complete');
+ 
     // Page event listeners
     page.on('dialog', async (dialog) => {
       console.log('Dialog message:', dialog.message());
@@ -205,12 +351,15 @@ await page.evaluateOnNewDocument(() => {
     get: () => undefined
   });
 });
+
+//Google Authentication starts
     try {
       console.log('Starting Google authentication...');
       const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0' });
     await page.goto('https://accounts.google.com/',{ waitUntil: 'networkidle0' }); 
    // Email input with enhanced waiting
-  // Replace all page.waitForTimeout() with this:
+
+
 await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
   try {
     console.log('inside email field');
@@ -252,6 +401,7 @@ await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
 
     await page.click('#identifierNext'); // Click "Next"
     await new Promise(resolve => setTimeout(resolve, 2000));
+
     //handling password input
     console.log('Typing password...');
     await page.waitForSelector('input[type="password"]', { visible: true, timeout: 30000 });
@@ -281,8 +431,6 @@ await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
     throw error;
   }
 
-    // Perform login
-    //await attemptLogin();
     // Join meeting
     console.log(`Joining meeting: ${meeting.id}`);
 
@@ -296,8 +444,6 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
   await page.goto(meeting.meeting_url, { waitUntil: 'networkidle0', timeout: PAGE_LOAD_TIMEOUT });
 }
 
-
-   
      // Check for permission errors
      const permissionError = await page.$('text/You can\'t create a meeting yourself');
      if (permissionError) {
@@ -367,17 +513,23 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
     // Look for join button
     console.log('Looking for join button...');
      await findJoinButton();
-  
-    await page.screenshot({ path: 'after_click.png' });
+
+     await page.screenshot({ path: 'after_click.png' });
     console.log('Screenshot taken after clicking join button.');
 
+// Listen to browser console logs and print them to the terminal
+page.on('console', (msg) => {
+  console.log('Browser log:', msg.text());
+});
+  
     try {
       await page.waitForSelector('div[class="ne2Ple-oshW8e-V67aGc"]', { visible: true, timeout: 60000 });
       console.log('Detected "Present now" tooltip. You are in the meeting.');
     } catch (error) {
       console.log('Join confirmation failed or not detected:', error);
     }
-   
+
+
     await new Promise(r => setTimeout(r, 5000));
 
     // Calculate and wait for meeting duration
@@ -387,9 +539,32 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
     if (meetingDuration <= 0) {
       throw new Error('Invalid meeting duration: end date must be after start date');
     }
+    await new Promise(r => setTimeout(r, 5000));
+    const audioTestResult = await testAudioRecording();
+if (!audioTestResult) {
+  console.warn('Audio recording test failed - proceeding without audio recording');
+}
+ // Start recording
+ let audioCommand;
+const audioFilename = path.join(RECORDING_DIR, `meeting-${meeting.id}-audio-${Date.now()}.mp3`);
+audioCommand = await startAudioRecording(audioFilename);
+console.log('Audio recording started');
+    // Wait until end time is reached
+    while (new Date() < new Date(meeting.end_time)) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 
-    await new Promise(resolve => setTimeout(resolve, meetingDuration));
+// Short wait for file saving (5 seconds should be enough)
+await new Promise(r => setTimeout(r, 5000));
 
+// Stop recording after some time (example: 10 seconds)
+setTimeout(() => {
+  if (audioCommand && audioCommand.ffmpegProc) {
+    console.log('Stopping audio recording...');
+    audioCommand.ffmpegProc.kill('SIGINT'); // Properly stop FFmpeg
+  }}, 10000); // 10 seconds example
+
+console.log('Recording completed');
     // Update meeting status
     await supabase
       .from('meeting')
@@ -402,18 +577,22 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
     console.error('Meeting automation failed:', error.message);
    // await takeScreenshot(page, 'error-state');
    if (page) {
-    try {
-        await page.close();
-    } catch (e) {
-        console.error('Error closing page:', e);
-    }
+    await page.evaluate(() => {
+      if (window.meetingRecorder) {
+        window.meetingRecorder.stop();
+      }
+    });
 }
+
 if (browser) {
-    try {
-        await browser.close();
-    } catch (e) {
-        console.error('Error closing browser:', e);
+  try {
+    await browser.close();
+  } catch (e) {
+    console.log('Browser close failed, attempting force kill');
+    if (browser.process()) {
+      process.kill(browser.process().pid);
     }
+  }
    
     // Update meeting status with error
     await supabase
@@ -428,9 +607,12 @@ if (browser) {
  } finally {
   if (browser) {
     try {
-        await browser.close();
+      await browser.close();
     } catch (e) {
-        console.error('Error in final browser cleanup:', e);
+      console.log('Browser close failed, attempting force kill');
+      if (browser.process()) {
+        process.kill(browser.process().pid);
+      }
     }
   }
 }
