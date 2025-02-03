@@ -14,20 +14,24 @@
   "license": "ISC",
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
-    "@supabase/supabase-js": "^2.47.10",
+    "@supabase/supabase-js": "^2.48.1",
     "aws-sdk": "^2.1692.0",
+    "dgram": "^1.0.1",
     "dotenv": "^16.4.7",
     "extendable-media-recorder": "^9.2.19",
     "extendable-media-recorder-wav-encoder": "^7.0.123",
+    "ffmpeg-static": "^5.2.0",
     "fluent-ffmpeg": "^2.1.3",
     "node-schedule": "^2.1.1",
     "puppeteer": "^24.1.0",
+    "puppeteer-core": "^24.1.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-adblocker": "^2.13.6",
     "puppeteer-extra-plugin-anonymize-ua": "^2.4.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "puppeteer-screen-recorder": "^2.1.2",
-    "puppeteer-stream": "^3.0.19"
+    "puppeteer-stream": "^3.0.19",
+    "stream": "^0.0.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"

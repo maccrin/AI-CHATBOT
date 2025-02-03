@@ -1,5 +1,4 @@
 import dotenv from 'dotenv';
-import os from 'os';
 import { tmpdir } from 'os';
 import { createClient } from '@supabase/supabase-js';
 import schedule from 'node-schedule';
@@ -7,12 +6,21 @@ import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import AnonymizeUAPlugin from 'puppeteer-extra-plugin-anonymize-ua';
 import AdblockerPlugin from 'puppeteer-extra-plugin-adblocker';
-import fs from 'fs/promises';
+import fs from 'fs';
 import path from 'path';
-
+import { launch, getStream } from 'puppeteer-stream';
+import { promisify } from 'util';
+import { exec } from 'child_process';
 // Load environment variables
 dotenv.config();
-//puppeteer.use(StealthPlugin());
+
+// @ts-nocheck
+// initialoze stealthplugin
+const stealthPlugin = StealthPlugin();
+stealthPlugin.enabledEvasions.delete('iframe.contentWindow');
+stealthPlugin.enabledEvasions.delete('media.codecs');
+//add plugin to puppeteer
+puppeteer.use(StealthPlugin());
 puppeteer.use(AnonymizeUAPlugin());
 puppeteer.use(AdblockerPlugin({ blockTrackers: true }));
 
@@ -24,11 +32,19 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
+
 // Initialize Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 );
+
+const execAsync = promisify(exec);
+// Set ffmpeg path
+//ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+
+
+
 
 // Constants
 const stealth = StealthPlugin();
@@ -39,8 +55,6 @@ const RECORDING_DIR = path.join(process.cwd(), 'recordings');
 const SESSION_FILE = path.join(process.cwd(), 'google-session.json');
 const MEETING_CHECK_INTERVAL = '*/1 * * * *';
 const PAGE_LOAD_TIMEOUT = 60000;
-const MAX_RETRIES = 6;
-const RETRY_DELAY = 5000;
 // Use 64-bit Chrome path
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 
@@ -72,7 +86,6 @@ const handleMeeting = async (meeting) => {
     // Google Login Selectors
     SECURITY_WARNING: 'div:has-text("This browser or app may not be secure")',
     TRY_AGAIN_BUTTON: 'button:has-text("Try again"), button[jsname="LgbsSe"]',
-    PASSWORD_INPUT: 'input[type="password"], input[name="password"]',
     CHALLENGE_FRAME: 'iframe[title="Challenge"]',
     EMAIL_INPUT: 'input[type="email"]',
     PASSWORD_INPUT: 'input[type="password"]',
@@ -105,7 +118,7 @@ const handleMeeting = async (meeting) => {
       // Find a writable directory
       for (const dir of fallbackDirs) {
         try {
-          await fs.mkdir(dir, { recursive: true });
+          fs.mkdirSync(dir, { recursive: true });
           screenshotDir = dir;
           break;
         } catch (mkdirError) {
@@ -121,12 +134,49 @@ const handleMeeting = async (meeting) => {
     }
   };
 
-  let browser = null;
-  let page = null;
-  let retryCount = 0;
-  
+  let stream=null;
+  const USER_DATA_DIR = path.join(tmpdir(), `chrome_profile_${Date.now()}`);
+
+  // Ensure user data directory exists
+try {
+  fs.rmSync(USER_DATA_DIR, { recursive: true, force: true });
+  fs.mkdirSync(USER_DATA_DIR, { recursive: true });
+  console.log('Created user data directory:', USER_DATA_DIR);
+} catch (error) {
+  console.error('Failed to create user data directory:', error);
+  throw error;
+}
+  console.log('launching browser');
+  const browser = await launch({
+    headless: false,
+    devtools: false,
+      slowMo: 10,
+    ignoreDefaultArgs: ["--enable-automation","--disable-blink-features=AutomationControlled"],
+    args: [
+      `--user-data-dir=${USER_DATA_DIR}`,
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--disable-software-rasterizer',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--start-maximized', 
+      '--use-fake-ui-for-media-stream', // Automatically grant camera/microphone permissions
+      '--use-fake-device-for-media-stream', // Use a fake device for media stream
+      //additional features 
+      '--allow-file-access',
+      '--enable-usermedia-screen-capturing',
+      '--auto-select-desktop-capture-source="Meet"',
+      '--disable-features=IsolateOrigins',
+      '--disable-site-isolation-trials',
+      '--autoplay-policy=no-user-gesture-required'
+  ],
+    executablePath: CHROME_PATH,
+    defaultViewport: null
+});
+ const page = await browser.newPage();
   try {
     console.log(` Starting meeting automation for meeting ID: ${meeting.id}`);
+   
     console.log('Meeting Details:', JSON.stringify(meeting, null, 2));
 
     // Validate meeting object
@@ -135,51 +185,28 @@ const handleMeeting = async (meeting) => {
     }
     
     // Create recordings directory
-    await fs.mkdir(RECORDING_DIR, { recursive: true });
+    fs.mkdir(RECORDING_DIR, { recursive: true }, (err) => {
+      if (err) console.error('Failed to create directory:', err);
+  });
     process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true';
 // Create a separate user data directory for the automation
-const USER_DATA_DIR = 'C:\\chrome_automation_profile';
 
-// Ensure user data directory exists
-try {
-  await fs.rm(USER_DATA_DIR, { recursive: true, force: true });
-  await fs.mkdir(USER_DATA_DIR, { recursive: true });
-  console.log('Created user data directory:', USER_DATA_DIR);
-} catch (error) {
-  console.error('Failed to create user data directory:', error);
-  throw error;
-}
-    console.log('launching browser');
-    const browser = await puppeteer.launch({
-      headless: false,
-      channel: 'chrome', // Use installed Chrome
-      executablePath: CHROME_PATH,
-      ignoreDefaultArgs: ['--disable-extensions'],
-      args: [
-        '--disable-web-security',
-        '--disable-blink-features=AutomationControlled',
-        `--user-data-dir=${USER_DATA_DIR}`,
-        '--no-sandbox',
-        '--disable-setuid-sandbox'
-      ],
-      defaultViewport: null
-  });
-    
+;
+
+
    // Wait for browser to be properly initialized
    await new Promise(resolve => setTimeout(resolve, 3000));
    // Close initial blank page and create new page
-// Close initial blank page and create new page
-const pages = await browser.pages();
-if (pages.length > 0) {
-    await Promise.all(pages.map(page => page.close()));
-}
-page = await browser.newPage();
+  
+   // Create CDP session
+  
+    const client = await page.createCDPSession();
+   await client.send('Network.clearBrowserCookies');
+   await client.send('Network.clearBrowserCache');
+ 
 await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
  
 page.setDefaultNavigationTimeout(60000);
-console.log('Browser and page setup complete');
-    // Anti-detection setup
-   
 
     // Page event listeners
     page.on('dialog', async (dialog) => {
@@ -192,67 +219,78 @@ console.log('Browser and page setup complete');
         console.log(`Received ${response.status()} response from ${response.url()}`);
       }
     });
+// Override navigator.webdriver
+await page.evaluateOnNewDocument(() => {
+  delete Object.getPrototypeOf(navigator).webdriver;
+  // Overwrite the automation property
+  Object.defineProperty(navigator, 'webdriver', {
+    get: () => undefined
+  });
+});
 
+//Google Authentication starts
     try {
       console.log('Starting Google authentication...');
       const navigationPromise = page.waitForNavigation({ waitUntil: 'networkidle0' });
-    await page.goto('https://accounts.google.com/');
-    //await navigationPromise;
-    await page.waitForNavigation({ waitUntil: 'networkidle0' });
-    
-    // Email input with enhanced waiting
-    console.log('Handling email input...');
-    const emailSelector = 'input[type="email"]';
-    await page.waitForSelector(emailSelector, { visible: true, timeout: 5000 });
-    
-    // Clear email field first
-    await page.$eval(emailSelector, e => e.value = '');
-    await page.type(emailSelector, process.env.GOOGLE_EMAIL, { delay: 100 });
-    
-    // Click next after email
-    const identifierNextSelector = '#identifierNext';
-    await page.waitForSelector(identifierNextSelector, { visible: true, timeout: 5000 });
-    
-    // Click using evaluate for better reliability
-    await page.$eval(identifierNextSelector, button => button.click());
-    
-    // Wait for password field to be ready
-    console.log('Waiting for password field...');
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Password input with enhanced waiting
-    console.log('Handling password input...');
-    const passwordSelector = 'input[type="password"]';
-    await page.waitForSelector(passwordSelector, { visible: true, timeout: 10000 });
-    
-    // Clear password field first
-    await page.$eval(passwordSelector, e => e.value = '');
-    await page.type(passwordSelector, process.env.GOOGLE_PASSWORD, { delay: 100 });
-    
-    // Click next after password
-    console.log('Clicking password next button...');
-    const passwordNextSelector = '#passwordNext';
-    await page.waitForSelector(passwordNextSelector, { visible: true, timeout: 5000 });
-    
-    // Click using evaluate for better reliability
-    await page.$eval(passwordNextSelector, button => button.click());
-    
-    // Wait for navigation and verify login success
-    console.log('Waiting for login completion...');
-    await Promise.race([
-      page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 }),
-      new Promise(resolve => setTimeout(resolve, 10000))
-    ]);
-    
-    // Save session cookies
-    console.log('Saving session cookies...');
-    const cookies = await page.cookies();
-    await fs.writeFile(SESSION_FILE, JSON.stringify(cookies, null, 2));
-    
-    console.log('Login sequence completed successfully');
-  
+    await page.goto('https://accounts.google.com/',{ waitUntil: 'networkidle0' }); 
+   // Email input with enhanced waiting
+
+
+await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
+  try {
+     // First find and interact with the email input field
+  console.log('Looking for email input field...');
+  const emailField = await page.waitForSelector('input[type="email"]', {
+    visible: true,
+    timeout: 10000
+  });
+
+  if (!emailField) {
+    throw new Error('Email field not found');
+  }
+
+  // Focus and click the email field first
+  await emailField.click();
+  await new Promise(resolve => setTimeout(resolve, 2000));
+
+  // Now the passkey option should be visible if it exists
+  // Ignore it and proceed with email input
+  await emailField.click({ clickCount: 3 }); // Clear any existing text
+  await page.keyboard.press('Backspace');
+
+  // Type email with delay
+  await emailField.type(process.env.GOOGLE_EMAIL, { delay: 100 });
+
+  // Verify email was typed correctly
+  const emailValue = await page.$eval('input[type="email"]', el => el.value);
+  console.log('Email field value after typing:', emailValue);
     
   } catch (error) {
+      console.log('First method failed, trying alternative...');
+      
+      const emailField = await page.$('input[type="email"]');
+      await emailField.focus();
+      await emailField.type(process.env.GOOGLE_EMAIL, { delay: 50 });
+  }
+
+    await page.click('#identifierNext'); // Click "Next"
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    //handling password input
+    console.log('Typing password...');
+    await page.waitForSelector('input[type="password"]', { visible: true, timeout: 30000 });
+    const passwordField = await page.$('input[type="password"]');
+    await passwordField.focus(); // Ensures focus on the input field
+    await passwordField.click({ clickCount: 3 });
+    await passwordField.type(process.env.GOOGLE_PASSWORD, { delay: 100 });
+    await page.click('#passwordNext'); // Click "Next"
+
+      // Wait for navigation to confirm login success
+  await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 60000 });
+    console.log('Login sequence completed');
+  } 
+  
+  catch (error) {
     console.error('Login failed:', error);
     
     // Take error screenshot
@@ -266,17 +304,20 @@ console.log('Browser and page setup complete');
     
     throw error;
   }
-    
-
-    // Perform login
-    //await attemptLogin();
 
     // Join meeting
     console.log(`Joining meeting: ${meeting.id}`);
-    await page.goto(meeting.meeting_url, {
-      waitUntil: 'networkidle0',
-      timeout: PAGE_LOAD_TIMEOUT
-    });
+
+// Check if we're on the Google account page and force redirect to the meeting URL
+if (page.url() === 'https://myaccount.google.com/?pli=1') {
+
+  console.log('Detected redirection to Google account page, navigating to meeting URL...');
+  await page.goto(meeting.meeting_url, { waitUntil: 'networkidle0', timeout: PAGE_LOAD_TIMEOUT });
+} else {
+  console.log('Logged in successfully, navigating to meeting URL...');
+  await page.goto(meeting.meeting_url, { waitUntil: 'networkidle0', timeout: PAGE_LOAD_TIMEOUT });
+}
+
      // Check for permission errors
      const permissionError = await page.$('text/You can\'t create a meeting yourself');
      if (permissionError) {
@@ -285,74 +326,91 @@ console.log('Browser and page setup complete');
 
     // Wait for pre-join screen and set name
     console.log('Setting up for meeting join...');
-    await waitForSelectorWithRetry(page, 'div[jscontroller]', { timeout: 30000 });
-
-    const nameInput = await page.$(SELECTORS.NAME_INPUT);
-    if (nameInput) {
-      await nameInput.click({ clickCount: 3 });
-      await nameInput.type('Recording Bot');
-    }
+  await new Promise( resolve=> setTimeout(resolve,6000));
 
     // Handle camera and mic
-    console.log('Configuring camera and mic...');
-    try {
-      await waitForSelectorWithRetry(page, SELECTORS.CAMERA_BUTTON, { timeout: 5000 });
-      await page.click(SELECTORS.CAMERA_BUTTON);
-      await waitForSelectorWithRetry(page, SELECTORS.MIC_BUTTON, { timeout: 5000 });
-      await page.click(SELECTORS.MIC_BUTTON);
-    } catch (e) {
-      console.log('Camera/mic buttons not found, continuing...');
-    }
 
     // Function to check for multiple possible join button selectors
     const findJoinButton = async () => {
-      const selectors = [
-        '[jsname="Cuz2Ue"]',  // Standard join button
-        'button[jsname="A5il2e"]',  // Alternate join button
-        'button[jsname="QgSmzd"]',  // "Ask to join" button
-        'button:has-text("Join now")',  // Text-based selector
-        'button:has-text("Ask to join")'  // Text-based selector
-      ];
-
-      for (const selector of selectors) {
-        const button = await page.$(selector);
-        if (button) {
-          console.log(`Found join button with selector: ${selector}`);
-          return button;
-        }
+      console.log('Inside "Ask to join" button function');
+      
+  try {
+    // Wait for page stability
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Find button containing the span with "Ask to join" text
+    const button = await page.evaluateHandle(() => {
+      // First find the span with "Ask to join" text
+      const span = Array.from(document.querySelectorAll('span')).find(
+        span => span.textContent === 'Ask to join'
+      );
+      // If span found, get its parent button
+      if (span) {
+        return span.closest('button');
       }
       return null;
-    };
+    });
 
-    // Handle pre-join settings
-    console.log('Setting up pre-join configurations...');
-    
-    // Wait for the page to stabilize
-    await new Promise(r => setTimeout(r, 5000));
-
-    // Handle camera and microphone permissions
-    const mediaButtons = await page.$$('[role="button"]');
-    for (const button of mediaButtons) {
-      const ariaLabel = await button.evaluate(el => el.getAttribute('aria-label'));
-      if (ariaLabel?.includes('camera') || ariaLabel?.includes('microphone')) {
-        await button.click().catch(() => {});
-        await new Promise(r => setTimeout(r, 1000));
-      }
+    if (!button) {
+      throw new Error('Join button not found');
     }
+
+    console.log('Found join button, attempting to click...');
+    
+    // Get button position
+    const buttonBox = await button.boundingBox();
+    if (!buttonBox) {
+      throw new Error('Could not get button position');
+    }
+
+    // Click in the center of the button
+    await page.mouse.click(
+      buttonBox.x + buttonBox.width/2,
+      buttonBox.y + buttonBox.height/2
+    );
+    
+    console.log('Join button clicked successfully');
+  } 
+    catch(error){
+
+      console.error('Error interacting with "Ask to join" button:', error);
+    } 
+    
+  };
+
+ // Wait for the page to stabilize
+    await new Promise(r => setTimeout(r, 5000));
 
     // Look for join button
     console.log('Looking for join button...');
-    const joinButton = await findJoinButton();
-    if (!joinButton) {
-      throw new Error('Join button not found after checking all possible selectors');
+     await findJoinButton();
+     await new Promise(r => setTimeout(r, 5000));; // Wait for the bot to join
+
+// Listen to browser console logs and print them to the terminal
+page.on('console', (msg) => {
+  console.log('Browser log:', msg.text());
+});
+  
+    try {
+      await page.waitForSelector('div[class="ne2Ple-oshW8e-V67aGc"]', { visible: true, timeout: 60000 });
+      console.log('Detected "Present now" tooltip. You are in the meeting.');
+    } catch (error) {
+      console.log('Join confirmation failed or not detected:', error);
     }
 
-    // Click join button
-    console.log('Clicking join button...');
-    await joinButton.click();
+// Wait for the microphone button and click on it
+await page.waitForSelector('button[aria-label="Turn off microphone"]', { timeout: 60000 });  // Set to 60 seconds
 
-    // Wait for join confirmation
-    console.log('Waiting for join confirmation...');
+await page.click('button[aria-label="Turn off microphone"]');  // This simulates the microphone toggle
+
+// Optional: Verify if the button now has the 'aria-pressed="false"' attribute, which indicates it's muted
+const isMuted = await page.evaluate(() => {
+  const micButton = document.querySelector('button[aria-label="Turn off microphone"]');
+  return micButton ? micButton.getAttribute('aria-pressed') === 'true' : false;
+});
+
+console.log(isMuted ? 'Microphone is on' : 'Microphone is muted');
+
     await new Promise(r => setTimeout(r, 5000));
 
     // Calculate and wait for meeting duration
@@ -362,9 +420,25 @@ console.log('Browser and page setup complete');
     if (meetingDuration <= 0) {
       throw new Error('Invalid meeting duration: end date must be after start date');
     }
+    await new Promise(r => setTimeout(r, 5000));
+   
+ // Start recording
 
-    await new Promise(resolve => setTimeout(resolve, meetingDuration));
+ const audioFilename = path.join(RECORDING_DIR, `meeting-${meeting.id}-audio-${Date.now()}.mp3`);
+ const file = fs.createWriteStream(audioFilename);
+ // Start recording and store the command
+  stream = await getStream(page, { audio: true,timeout: 60000 });
+    stream.pipe(file); // Pipe the stream to the file for saving
+    // Wait until end time is reached
+    while (new Date() < new Date(meeting.end_time)) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 
+// Short wait for file saving (5 seconds should be enough)
+await new Promise(r => setTimeout(r, 5000));
+
+// Stop recording after some time (example: 10 seconds)
+console.log('Recording completed');
     // Update meeting status
     await supabase
       .from('meeting')
@@ -376,7 +450,17 @@ console.log('Browser and page setup complete');
   } catch (error) {
     console.error('Meeting automation failed:', error.message);
    // await takeScreenshot(page, 'error-state');
-
+   
+if (browser) {
+  try {
+    await browser.close();
+  } catch (e) {
+    console.log('Browser close failed, attempting force kill');
+    if (browser.process()) {
+      process.kill(browser.process().pid);
+    }
+  }
+   
     // Update meeting status with error
     await supabase
       .from('meeting')
@@ -386,13 +470,21 @@ console.log('Browser and page setup complete');
       })
       .eq('id', meeting.id);
 
-  } finally {
-    if (browser) {
-      await browser.close().catch(console.error);
+  }
+ } finally {
+  if (browser) {
+    try {
+      await browser.close();
+    } catch (e) {
+      console.log('Browser close failed, attempting force kill');
+      if (browser.process()) {
+        process.kill(browser.process().pid);
+      }
     }
   }
-};
 
+};
+}
 // Schedule individual meeting
 const scheduleMeeting = (meeting) => {
   const startDate = new Date(meeting.start_time);

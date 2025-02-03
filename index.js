@@ -44,35 +44,6 @@ const execAsync = promisify(exec);
 // Set ffmpeg path
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
-
-// Helper function to check if audio recording is working
-const testAudioRecording = async () => {
-  let command;
-  try {
-    const testPath = path.join(RECORDING_DIR, 'test-audio.mp3');
-    command = await startAudioRecording(testPath);
-    
-    // Record for 5 seconds as a test
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Properly kill the FFmpeg process
-
-    if (command && command.ffmpegProc) {
-      console.log('Stopping test audio recording...');
-      command.ffmpegProc.kill('SIGTERM');
-
-      // Wait for process to fully stop
-      await new Promise(r => setTimeout(r, 2000));
-    }
-    
-    // Check if file exists and has size
-    const stats = await fs.stat(testPath);
-    return stats.size > 0;
-  } catch (error) {
-    console.error('Audio test failed:', error);
-    return false;
-  }
-};
 // Function to parse audio devices from FFmpeg output
 const parseAudioDevices = (stderr) => {
   const devices = [];
@@ -115,27 +86,21 @@ const listAudioDevices = async () => {
     throw error;
   }
 };
-
+let audioCommand;
 
 // Audio recording function
 const startAudioRecording = (outputPath) => {
   return new Promise(async (resolve, reject) => {
     try {
-      // Get available devices
-      const devices = await listAudioDevices();
-      if (!devices.length) {
-        return reject(new Error('No audio devices found'));
-      }
+     // List available devices
+    const devices = await listAudioDevices();
+    if (!devices.length) throw new Error('No audio devices found');
 
-      // Select first available device
-      const device = devices[0];
-      const deviceName = device.alternative || device.name;
-
-      // Properly escape device name for FFmpeg
-      const escapedDeviceName = deviceName.replace(/"/g, '\\"');
+    // Select the correct device (try 'Stereo Mix' if available)
+    const device = devices.find(d => d.name.includes('Stereo Mix')) || devices[0];
 
       const command = ffmpeg()
-        .input(`audio=${escapedDeviceName}`)
+        .input(`audio=${device.name}`)
         .inputFormat('dshow')
         .inputOptions([
           '-thread_queue_size 4096',
@@ -177,9 +142,6 @@ const MEETING_CHECK_INTERVAL = '*/1 * * * *';
 const PAGE_LOAD_TIMEOUT = 60000;
 // Use 64-bit Chrome path
 const CHROME_PATH = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-
-
-
 
 // Helper function for waiting with retry
 const waitForSelectorWithRetry = async (page, selector, options = {}) => {
@@ -305,6 +267,11 @@ try {
         '--auto-select-desktop-capture-source="Meet"',
         '--disable-features=IsolateOrigins',
         '--disable-site-isolation-trials',
+        '--autoplay-policy=no-user-gesture-required',
+        //additional features for not to recognize bot
+        '--disable-features=ScreenCapture',
+        '--disable-blink-features=MediaRecorder',
+        '--allow-running-insecure-content',
         '--autoplay-policy=no-user-gesture-required'
     ],
       executablePath: CHROME_PATH,
@@ -316,11 +283,7 @@ try {
    // Close initial blank page and create new page
    const pages = await browser.pages();
    page = pages[0];  // Just use the first auto-created page
-
-
    // Create CDP session
-  
-
    const filename = path.join(RECORDING_DIR, `meeting-${meeting.id}-${Date.now()}.webm`);
   
     const client = await page.createCDPSession();
@@ -330,8 +293,6 @@ await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/5
  
 page.setDefaultNavigationTimeout(60000);
 
-console.log('Browser and page setup complete');
- 
     // Page event listeners
     page.on('dialog', async (dialog) => {
       console.log('Dialog message:', dialog.message());
@@ -362,7 +323,6 @@ await page.evaluateOnNewDocument(() => {
 
 await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
   try {
-    console.log('inside email field');
      // First find and interact with the email input field
   console.log('Looking for email input field...');
   const emailField = await page.waitForSelector('input[type="email"]', {
@@ -384,7 +344,6 @@ await new Promise(resolve => setTimeout(resolve, 2000)); // 2000ms = 2 seconds
   await page.keyboard.press('Backspace');
 
   // Type email with delay
-  console.log('Typing email...');
   await emailField.type(process.env.GOOGLE_EMAIL, { delay: 100 });
 
   // Verify email was typed correctly
@@ -455,8 +414,6 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
   await new Promise( resolve=> setTimeout(resolve,6000));
 
     // Handle camera and mic
-
-    // Function to check for multiple possible join button selectors
     const findJoinButton = async () => {
       console.log('Inside "Ask to join" button function');
       
@@ -464,7 +421,6 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
     // Wait for page stability
     await new Promise(resolve => setTimeout(resolve, 5000));
     
-    // Find button containing the span with "Ask to join" text
     const button = await page.evaluateHandle(() => {
       // First find the span with "Ask to join" text
       const span = Array.from(document.querySelectorAll('span')).find(
@@ -494,8 +450,32 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
       buttonBox.x + buttonBox.width/2,
       buttonBox.y + buttonBox.height/2
     );
-    
+    try {
+      await page.waitForSelector('div[class="ne2Ple-oshW8e-V67aGc"]', { visible: true, timeout: 60000 });
+      console.log('Detected "Present now" tooltip. You are in the meeting.');
+    } catch (error) {
+      console.log('Join confirmation failed or not detected:', error);
+    }
     console.log('Join button clicked successfully');
+
+    // Wait for the microphone button and click on it
+await page.waitForSelector('button[aria-label="Turn off microphone"]', { timeout: 60000 });  // Set to 60 seconds
+
+await page.click('button[aria-label="Turn off microphone"]');  // This simulates the microphone toggle
+
+// Start recording
+const audioFilename = path.join(RECORDING_DIR, `meeting-${meeting.id}-audio-${Date.now()}.mp3`);
+audioCommand = await startAudioRecording(audioFilename);
+console.log('Audio recording started');
+//add some delay here to get selector 
+await new Promise(r => setTimeout(r, 5000));
+// Optional: Verify if the button now has the 'aria-pressed="false"' attribute, which indicates it's muted
+const isMuted = await page.evaluate(() => {
+  const micButton = document.querySelector('button[aria-label="Turn off microphone"]');
+  return micButton ? micButton.getAttribute('aria-pressed') === 'true' : false;
+});
+
+console.log(isMuted ? 'Microphone is on' : ' Bot Microphone is muted');
   } 
     catch(error){
 
@@ -504,34 +484,18 @@ if (page.url() === 'https://myaccount.google.com/?pli=1') {
     
   };
 
-    // Handle pre-join settings
-    console.log('Setting up pre-join configurations...');
-    
-    // Wait for the page to stabilize
+ // Wait for the page to stabilize
     await new Promise(r => setTimeout(r, 5000));
 
     // Look for join button
     console.log('Looking for join button...');
      await findJoinButton();
-
-     await page.screenshot({ path: 'after_click.png' });
-    console.log('Screenshot taken after clicking join button.');
+     await new Promise(r => setTimeout(r, 5000));; // Wait for the bot to join
 
 // Listen to browser console logs and print them to the terminal
 page.on('console', (msg) => {
   console.log('Browser log:', msg.text());
 });
-  
-    try {
-      await page.waitForSelector('div[class="ne2Ple-oshW8e-V67aGc"]', { visible: true, timeout: 60000 });
-      console.log('Detected "Present now" tooltip. You are in the meeting.');
-    } catch (error) {
-      console.log('Join confirmation failed or not detected:', error);
-    }
-
-
-    await new Promise(r => setTimeout(r, 5000));
-
     // Calculate and wait for meeting duration
     const meetingDuration = new Date(meeting.end_time) - new Date(meeting.start_time);
     console.log(`Meeting duration: ${meetingDuration} ms`);
@@ -540,15 +504,7 @@ page.on('console', (msg) => {
       throw new Error('Invalid meeting duration: end date must be after start date');
     }
     await new Promise(r => setTimeout(r, 5000));
-    const audioTestResult = await testAudioRecording();
-if (!audioTestResult) {
-  console.warn('Audio recording test failed - proceeding without audio recording');
-}
- // Start recording
- let audioCommand;
-const audioFilename = path.join(RECORDING_DIR, `meeting-${meeting.id}-audio-${Date.now()}.mp3`);
-audioCommand = await startAudioRecording(audioFilename);
-console.log('Audio recording started');
+   
     // Wait until end time is reached
     while (new Date() < new Date(meeting.end_time)) {
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -675,7 +631,7 @@ const monitorMeetings = async () => {
         if (!meeting) {
           job.cancel();
           activeJobs.delete(meetingId);
-          console.log(`Cleaned up completed meeting: ${meetingId}`);
+     
         }
       }
 
